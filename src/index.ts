@@ -128,6 +128,23 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
 });
 
 
+// --- RUTAS DE CATEGORÍAS ---
+
+app.get('/api/categories', async (req: Request, res: Response) => {
+  try {
+    const categories = await prisma.category.findMany({
+      where: { parentId: null },
+      include: { children: true },
+      orderBy: { name: 'asc' }
+    });
+    res.status(200).json(categories);
+  } catch (error) {
+    console.error('Error al obtener categorías:', error);
+    res.status(500).json({ error: 'Error interno al obtener categorías.' });
+  }
+});
+
+
 // --- RUTAS DE PRODUCTOS ---
 
 app.get('/api/products', async (req: Request, res: Response) => {
@@ -136,6 +153,7 @@ app.get('/api/products', async (req: Request, res: Response) => {
       orderBy: { createdAt: 'desc' },
       include: {
         creator: { select: { name: true } },
+        category: { select: { name: true } }
       },
     });
     res.status(200).json(products);
@@ -152,6 +170,7 @@ app.get('/api/products/:id', async (req: Request, res: Response) => {
       where: { id: id },
       include: {
         creator: { select: { name: true } },
+        category: { select: { name: true } }
       },
     });
 
@@ -165,25 +184,48 @@ app.get('/api/products/:id', async (req: Request, res: Response) => {
   }
 });
 
+// POST PRODUCTO: Lógica de Precios Avanzada
 app.post('/api/products', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const { title, description, price, images } = req.body;
+    const { title, description, price, images, categoryId, type } = req.body;
     const creatorId = req.userId;
 
-    if (!title || !description || !price) {
-      return res.status(400).json({ error: 'Título, descripción y precio son obligatorios.' });
+    // 1. Validaciones Comunes (Todo menos precio)
+    if (!title || !description || !categoryId || !type) {
+      return res.status(400).json({ error: 'Faltan campos obligatorios (Título, Descripción, Categoría o Tipo).' });
     }
     if (!creatorId) {
-      return res.status(401).json({ error: 'No se pudo identificar al usuario desde el token.' });
+      return res.status(401).json({ error: 'No se pudo identificar al usuario.' });
     }
 
+    // 2. Lógica de Precio por TIPO
+    let finalPrice = 0;
+    
+    // Convertimos a número si viene texto, o dejamos 0 si está vacío
+    if (price) {
+        finalPrice = parseFloat(price);
+    }
+
+    // REGLA A: Productos Físicos -> Precio Obligatorio
+    if (type === 'PRODUCTO') {
+        if (!finalPrice || finalPrice <= 0) {
+            return res.status(400).json({ error: 'Para vender un Producto Físico, debes colocar un precio válido.' });
+        }
+    }
+
+    // REGLA B: Servicios e Infoproductos -> Precio Opcional (0 significa "A Convenir" o "Gratis")
+    // (No necesitamos if, ya que finalPrice es 0 por defecto)
+
+    // 3. Crear Producto
     const newProduct = await prisma.product.create({
       data: {
         title: title,
         description: description,
-        price: parseFloat(price),
+        price: finalPrice,      // Guardamos el precio procesado
         images: images || [],
         creatorId: creatorId,
+        categoryId: categoryId,
+        type: type
       },
     });
 
@@ -196,12 +238,11 @@ app.post('/api/products', authMiddleware, async (req: AuthRequest, res: Response
 });
 
 
-// --- RUTAS DE TRANSACCIONES (MODO DEBUG - FIX LOCALHOST) ---
+// --- RUTAS DE TRANSACCIONES ---
 
 app.post('/api/transactions', authMiddleware, async (req: AuthRequest, res: Response) => {
   console.log('--- INICIO DE DEBUG TRANSACCIÓN ---');
   
-  // CORRECCIÓN: Definimos productId y buyerId FUERA del try para que el catch los vea
   const { productId } = req.body;
   const buyerId = req.userId;
 
@@ -217,6 +258,13 @@ app.post('/api/transactions', authMiddleware, async (req: AuthRequest, res: Resp
     if (product.status !== 'DISPONIBLE') return res.status(400).json({ error: 'Este producto ya no está disponible.' });
 
     const amount = Number(product.price);
+    
+    // VALIDACIÓN EXTRA: No se puede transaccionar algo de precio 0 por Mercado Pago
+    // Esto es vital: si es un servicio "A convenir" (precio 0), no podemos cobrar $0 en MP.
+    if (amount <= 0) {
+        return res.status(400).json({ error: 'Este ítem es "A Convenir" o "Gratis", no requiere pago por pasarela.' });
+    }
+
     const platformFee = amount * COMMISSION_RATE;
     const sellerPayout = amount - platformFee;
     const sellerId = product.creatorId;
@@ -254,9 +302,6 @@ app.post('/api/transactions', authMiddleware, async (req: AuthRequest, res: Resp
           failure: 'http://localhost:3000/payment/failure',
           pending: 'http://localhost:3000/payment/pending'
         },
-        // --- FIX CRÍTICO: Comentamos auto_return para evitar error en localhost ---
-        // auto_return: 'approved', 
-        // ------------------------------------------------------------------------
         external_reference: newTransaction.id,
       }
     };
@@ -284,7 +329,6 @@ app.post('/api/transactions', authMiddleware, async (req: AuthRequest, res: Resp
     }
     
     // Devolvemos el producto a DISPONIBLE si falla MP
-    // (Ahora sí funcionará porque productId está definido afuera)
     if (productId) {
         try {
             await prisma.product.update({
