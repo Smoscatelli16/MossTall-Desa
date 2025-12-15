@@ -10,7 +10,7 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// --- ENUMS (Tipos predefinidos) ---
+// --- ENUMS ---
 
 enum Role {
   USER
@@ -25,27 +25,29 @@ enum TransactionStatus {
   CANCELADO
 }
 
-// ¡NUEVO! Tipología de la Publicación (Para diferenciar lógica de envío/entrega)
 enum ListingType {
-  PRODUCTO      // Bien físico (Requiere envío/logística)
-  SERVICIO      // Intangible (Requiere coordinación/agenda)
-  INFOPRODUCTO  // Digital (Requiere link de descarga o acceso)
+  PRODUCTO      
+  SERVICIO      
+  INFOPRODUCTO  
+}
+
+// Estado del ítem
+enum ProductCondition {
+  NUEVO
+  USADO
+  REACONDICIONADO
 }
 
 // --- MODELOS DE DATOS ---
 
-// 1. Modelo de CATEGORÍAS (Estructura de Árbol)
+// 1. Modelo de CATEGORÍAS
 model Category {
   id          String    @id @default(uuid())
   name        String
-  slug        String    @unique // Para URLs amigables (ej: "tecnologia-celulares")
-  
-  // Relación Recursiva (Categoría Padre e Hijas)
-  parentId    String?   // Puede ser null si es una Categoría Principal
+  slug        String    @unique 
+  parentId    String?   
   parent      Category? @relation("SubCategories", fields: [parentId], references: [id])
   children    Category[] @relation("SubCategories")
-
-  // Relación con Productos
   products    Product[]
   
   createdAt   DateTime  @default(now())
@@ -54,22 +56,24 @@ model Category {
 
 // 2. Modelo de USUARIO
 model User {
-  id                   String    @id @default(uuid())
-  email                String    @unique
-  password             String
-  name                 String?
-  role                 Role      @default(USER)
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  id                  String    @id @default(uuid())
+  email               String    @unique
+  password            String
+  name                String?
+  role                Role      @default(USER)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
-  // Relaciones
-  products             Product[]
-  services             Service[] // (Legacy) Mantener por compatibilidad temporal
-  transactionsAsBuyer  Transaction[] @relation("BuyerTransactions")
-  transactionsAsSeller Transaction[] @relation("SellerTransactions")
-  ratingsGiven         Rating[]      @relation("RaterRatings")
-  ratingsReceived      Rating[]      @relation("RatedRatings")
-  professionalProfile  ProfessionalProfile?
+  products              Product[]
+  services              Service[] // (Legacy)
+  transactionsAsBuyer   Transaction[] @relation("BuyerTransactions")
+  transactionsAsSeller  Transaction[] @relation("SellerTransactions")
+  ratingsGiven          Rating[]      @relation("RaterRatings")
+  ratingsReceived       Rating[]      @relation("RatedRatings")
+  professionalProfile   ProfessionalProfile?
+
+  // RELACIONES DE PREGUNTAS (NUEVO)
+  questionsAsker        Question[]    @relation("AskerQuestions") // Preguntas que hice yo
 }
 
 // 3. Modelo de PERFIL PROFESIONAL
@@ -85,33 +89,42 @@ model ProfessionalProfile {
   updatedAt       DateTime  @updatedAt
 }
 
-// 4. Modelo de PRODUCTO (Ahora es la entidad central "Publicación")
+// 4. Modelo de PRODUCTO (Publicación)
 model Product {
-  id          String      @id @default(uuid())
-  creator     User        @relation(fields: [creatorId], references: [id])
-  creatorId   String
+  id            String      @id @default(uuid())
+  creator       User        @relation(fields: [creatorId], references: [id])
+  creatorId     String
   
-  // ¡NUEVO! Clasificación y Tipología
-  category    Category?   @relation(fields: [categoryId], references: [id])
-  categoryId  String?     // Opcional temporalmente para no romper productos viejos
-  type        ListingType @default(PRODUCTO) // Por defecto es físico
+  category      Category?   @relation(fields: [categoryId], references: [id])
+  categoryId    String?     
+  type          ListingType @default(PRODUCTO)
 
-  title       String
-  description String      @db.Text
-  price       Float
-  images      String[]
-  status      String      @default("DISPONIBLE")
+  title         String
+  description   String      @db.Text
+  price         Float
+  images        String[]
+  status        String      @default("DISPONIBLE") // DISPONIBLE, PAUSADO, SIN_STOCK
 
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  // --- CONTROL DE STOCK (NUEVO) ---
+  stock         Int         @default(1) // Cantidad disponible
 
-  // Relaciones
-  transactions Transaction[]
+  // Detalles opcionales
+  condition     ProductCondition? 
+  brand         String?            
+  model         String?            
+  year          Int?               
+  mileage       Int?               
+
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  transactions  Transaction[]
+  
+  // RELACIONES DE PREGUNTAS (NUEVO)
+  questions     Question[]  // Preguntas recibidas en este producto
 }
 
-// 5. Modelo de SERVICIO (LEGACY / DEPRECATED)
-// NOTA DE ARQUITECTURA: A futuro, los servicios deben migrarse a la tabla Product
-// con type="SERVICIO". Mantenemos esta tabla para no romper lógica existente hoy.
+// 5. Modelo de SERVICIO (LEGACY)
 model Service {
   id              String    @id @default(uuid())
   creator         User      @relation(fields: [creatorId], references: [id])
@@ -129,28 +142,31 @@ model Service {
 
 // 6. Modelo de TRANSACCIÓN
 model Transaction {
-  id            String            @id @default(uuid())
-  buyer         User              @relation("BuyerTransactions", fields: [buyerId], references: [id])
-  buyerId       String
-  seller        User              @relation("SellerTransactions", fields: [sellerId], references: [id])
-  sellerId      String
+  id              String            @id @default(uuid())
+  buyer           User              @relation("BuyerTransactions", fields: [buyerId], references: [id])
+  buyerId         String
+  seller          User              @relation("SellerTransactions", fields: [sellerId], references: [id])
+  sellerId        String
   
-  // Relación con Items (Soporta el modelo nuevo y el viejo)
-  product       Product?          @relation(fields: [productId], references: [id])
-  productId     String?
-  service       Service?          @relation(fields: [serviceId], references: [id])
-  serviceId     String?
+  product         Product?          @relation(fields: [productId], references: [id])
+  productId       String?
+  service         Service?          @relation(fields: [serviceId], references: [id])
+  serviceId       String?
 
-  status        TransactionStatus @default(INICIADO)
-  amount        Float
-  platformFee   Float
-  sellerPayout  Float
-  mercadoPagoId String?           @unique
+  status          TransactionStatus @default(INICIADO)
+  amount          Float
+  platformFee     Float
+  sellerPayout    Float
+  mercadoPagoId   String?           @unique
   
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
+  // CAMPOS DE BORRADO LÓGICO
+  deletedByBuyer  Boolean @default(false)
+  deletedBySeller Boolean @default(false)
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 
-  rating        Rating?
+  rating          Rating?
 }
 
 // 7. Modelo de CALIFICACIÓN
@@ -173,4 +189,24 @@ model Rating {
   
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
+}
+
+// 8. Modelo de PREGUNTAS (Q&A) - NUEVO
+model Question {
+  id          String   @id @default(uuid())
+  content     String   @db.Text // La pregunta del interesado
+  
+  answer      String?  @db.Text // La respuesta del vendedor (opcional al inicio)
+  answeredAt  DateTime?         // Cuándo se respondió
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt // Por si edita la respuesta
+
+  // Relación con el Producto
+  product     Product  @relation(fields: [productId], references: [id])
+  productId   String
+  
+  // Relación con quien Pregunta (Asker)
+  asker       User     @relation("AskerQuestions", fields: [askerId], references: [id])
+  askerId     String   
 }
