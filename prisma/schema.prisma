@@ -1,5 +1,4 @@
-// Este es el archivo "schema" de Prisma.
-// Define la conexión a tu base de datos y la estructura de tus tablas.
+// prisma/schema.prisma
 
 generator client {
   provider = "prisma-client-js"
@@ -17,13 +16,14 @@ enum Role {
   ADMIN
 }
 
-enum TransactionStatus {
-  INICIADO
-  PENDING_WORK        // Trabajo contratado, pendiente de ejecución/cobro final
-  PAGADO_EN_RETENCION
-  COMPLETADO
-  DISPUTADO
-  CANCELADO
+// Máquina de Estados Estricta (Spec #016 / #017)
+enum TransactionState {
+  PENDING
+  PAID_HELD
+  DELIVERY_CONFIRMED
+  FUNDS_RELEASED
+  DISPUTED
+  REFUNDED
 }
 
 enum ListingType {
@@ -39,71 +39,134 @@ enum ProductCondition {
   REACONDICIONADO
 }
 
+// BRIEF #030: Selector de Riel de Pago
+enum PaymentGateway {
+  MERCADO_PAGO
+  BIND
+}
+
+// BRIEF #038: Mercado Inverso (Tablón)
+enum NeedListingStatus {
+  OPEN
+  FULFILLED
+  CANCELLED
+}
+
+// BRIEF #040: Tipos de Tienda / Perfil Dinámico
+enum StoreType {
+  PRODUCT_STORE
+  SERVICE_PROFESSIONAL
+  DIGITAL_CREATOR
+}
+
 // --- MODELOS DE DATOS ---
 
 // 1. Modelo de CATEGORÍAS
 model Category {
-  id          String    @id @default(uuid())
-  name        String
-  slug        String    @unique 
-  parentId    String?    
-  parent      Category? @relation("SubCategories", fields: [parentId], references: [id])
-  children    Category[] @relation("SubCategories")
-  products    Product[]
+  id        String     @id @default(uuid())
+  name      String
+  slug      String     @unique 
+  parentId  String?    
+  parent    Category?  @relation("SubCategories", fields: [parentId], references: [id])
+  children  Category[] @relation("SubCategories")
+  products  Product[]
   
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
 }
 
-// 2. Modelo de USUARIO
+// 2. Modelo de USUARIO (Cuenta Paraguas)
 model User {
   id                  String    @id @default(uuid())
   email               String    @unique
   password            String
   name                String?
   role                Role      @default(USER)
+  
+  // -- SISTEMA DE REPUTACIÓN GLOBAL COMO COMPRADOR / USUARIO --
+  ratingAverage       Float     @default(0.0)
+  totalReviews        Int       @default(0)
+
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
-  products              Product[]
-  services              Service[] // (Legacy)
-  transactionsAsBuyer   Transaction[] @relation("BuyerTransactions")
-  transactionsAsSeller  Transaction[] @relation("SellerTransactions")
+  // -- RELACIÓN MULTI-TIENDA (BRIEF #040) --
+  stores              Store[]   @relation("UserStores")
+
+  services            Service[] // (Legacy)
+  
+  // Relación Mercado Inverso (Brief #038)
+  needs               NeedListing[] @relation("UserNeeds")
+
+  transactionsAsBuyer Transaction[] @relation("BuyerTransactions")
+  transactionsAsSeller Transaction[] @relation("SellerTransactions")
   
   // -- SISTEMA DE CALIFICACIONES LEGACY (Rating) --
-  ratingsGiven          Rating[]      @relation("RaterRatings")
-  ratingsReceived       Rating[]      @relation("RatedRatings")
+  ratingsGiven        Rating[]      @relation("RaterRatings")
+  ratingsReceived     Rating[]      @relation("RatedRatings")
   
   // -- SISTEMA DE REPUTACIÓN V2 (Review & Reports) --
-  reviewsWritten        Review[]      @relation("WrittenReviews")
-  reviewsReceived       Review[]      @relation("ReceivedReviews")
-  reportsMade           UserReport[]  @relation("ReporterReports")
-  reportsReceived       UserReport[]  @relation("ReportedReports")
+  reviewsWritten      Review[]      @relation("WrittenReviews")
+  reviewsReceived     Review[]      @relation("ReceivedReviews")
+  reportsMade         UserReport[]  @relation("ReporterReports")
+  reportsReceived     UserReport[]  @relation("ReportedReports")
 
-  professionalProfile   ProfessionalProfile?
+  professionalProfile ProfessionalProfile?
 
   // RELACIONES DE PREGUNTAS
-  questionsAsker        Question[]    @relation("AskerQuestions")
+  questionsAsker      Question[]    @relation("AskerQuestions")
 
-  // RELACIONES DE CHAT (NUEVO SPEC #009)
-  sentMessages          Message[]     @relation("SentMessages")
+  // RELACIONES DE CHAT (SPEC #009)
+  sentMessages        Message[]     @relation("SentMessages")
+
+  // BRIEF #039: Índices para búsquedas rápidas por email
+  @@index([email])
 }
 
-// 3. Modelo de PERFIL PROFESIONAL (ACTUALIZADO SPEC #010)
+// 2.1 NUEVO: Modelo de TIENDA / PERFIL (BRIEF #040)
+model Store {
+  id            String      @id @default(uuid())
+  
+  owner         User        @relation("UserStores", fields: [ownerId], references: [id])
+  ownerId       String
+
+  name          String
+  description   String?     @db.Text
+  logoUrl       String?
+
+  type          StoreType
+
+  // -- DATOS BANCARIOS DESACOPLADOS DEL USUARIO --
+  cbu           String?     
+  cvu           String?     
+  alias         String?
+
+  // -- MÉTRICAS INDEPENDIENTES DE LA TIENDA --
+  ratingAverage Float       @default(0.0)
+  totalReviews  Int         @default(0)
+  totalSales    Int         @default(0)
+
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // Los productos ahora pertenecen a la tienda, no al usuario
+  products      Product[]   @relation("StoreProducts")
+
+  @@index([ownerId])
+}
+
+// 3. Modelo de PERFIL PROFESIONAL (SPEC #010) - (Candidato a deprecarse o unirse a Store)
 model ProfessionalProfile {
   id              String    @id @default(uuid())
   user            User      @relation(fields: [userId], references: [id])
   userId          String    @unique
 
-  // Campos de Identidad Profesional
   profession      String?   // Ej: "Electricista Matriculado" (Antes 'title')
   biography       String?   @db.Text // "Sobre mí / Experiencia" (Antes 'summary')
   
-  // Campos de Evidencia / Portafolio
   portfolioImages String[]  // Array de URLs de fotos de trabajos
   certifications  String[]  // Lista de títulos o cursos realizados
 
-  // Campos adicionales
   experienceYears Int?
   education       String?
   
@@ -111,39 +174,47 @@ model ProfessionalProfile {
   updatedAt       DateTime  @updatedAt
 }
 
-// 4. Modelo de PRODUCTO (Publicación)
+// 4. Modelo de PRODUCTO (Publicación ligada a la Tienda)
 model Product {
-  id            String      @id @default(uuid())
-  creator       User        @relation(fields: [creatorId], references: [id])
-  creatorId     String
+  id              String      @id @default(uuid())
   
-  category      Category?   @relation(fields: [categoryId], references: [id])
-  categoryId    String?      
-  type          ListingType @default(PRODUCTO)
+  // -- NUEVA RELACIÓN (BRIEF #040) --
+  store           Store       @relation("StoreProducts", fields: [storeId], references: [id])
+  storeId         String
+  
+  category        Category?   @relation(fields: [categoryId], references: [id])
+  categoryId      String?     
+  
+  suggestedCategory String?
 
-  title         String
-  description   String      @db.Text
-  price         Float
-  images        String[]
-  status        String      @default("DISPONIBLE") // DISPONIBLE, PAUSADO, SIN_STOCK
+  type            ListingType @default(PRODUCTO)
+
+  title           String
+  description     String      @db.Text
+  price           Float
+  images          String[]
+  status          String      @default("DISPONIBLE") // DISPONIBLE, PAUSADO, SIN_STOCK
 
   // --- CONTROL DE STOCK ---
-  stock         Int         @default(1) 
+  stock           Int         @default(1) 
 
   // Detalles opcionales
-  condition     ProductCondition? 
-  brand         String?            
-  model         String?            
-  year          Int?                
-  mileage       Int?                
+  condition       ProductCondition? 
+  brand           String?           
+  model           String?           
+  year            Int?                
+  mileage         Int?                
 
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 
-  transactions  Transaction[]
+  transactions    Transaction[]
   
   // RELACIONES DE PREGUNTAS
-  questions     Question[] 
+  questions       Question[] 
+
+  @@index([storeId])
+  @@index([status])
 }
 
 // 5. Modelo de SERVICIO (LEGACY)
@@ -162,24 +233,63 @@ model Service {
   transactions    Transaction[]
 }
 
+// -- NUEVO: Modelo de MERCADO INVERSO (Tablón de Necesidades - Brief #038) --
+model NeedListing {
+  id              String            @id @default(uuid())
+  user            User              @relation("UserNeeds", fields: [userId], references: [id])
+  userId          String
+
+  title           String
+  description     String            @db.Text
+  estimatedBudget Float?
+  status          NeedListingStatus @default(OPEN)
+
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // Múltiples oferentes pueden abrir un chat para una sola necesidad
+  chatRooms       ChatRoom[]
+
+  // BRIEF #039: Índices para evitar escaneos completos
+  @@index([userId])
+  @@index([status])
+}
+
 // 6. Modelo de TRANSACCIÓN
 model Transaction {
-  id              String            @id @default(uuid())
-  buyer           User              @relation("BuyerTransactions", fields: [buyerId], references: [id])
-  buyerId         String
-  seller          User              @relation("SellerTransactions", fields: [sellerId], references: [id])
-  sellerId        String
+  id                 String            @id @default(uuid())
+  buyer              User              @relation("BuyerTransactions", fields: [buyerId], references: [id])
+  buyerId            String
+  seller             User              @relation("SellerTransactions", fields: [sellerId], references: [id])
+  sellerId           String
   
-  product         Product?          @relation(fields: [productId], references: [id])
-  productId       String?
-  service         Service?          @relation(fields: [serviceId], references: [id])
-  serviceId       String?
+  product            Product?          @relation(fields: [productId], references: [id])
+  productId          String?
+  service            Service?          @relation(fields: [serviceId], references: [id])
+  serviceId          String?
 
-  status          TransactionStatus @default(INICIADO)
-  amount          Float
-  platformFee     Float
-  sellerPayout    Float
+  // ESTADO Y FINANZAS
+  state                TransactionState  @default(PENDING)
+  
+  // BRIEF #030: Memoria Transaccional
+  paymentGateway       PaymentGateway    @default(MERCADO_PAGO)
+  
+  amount               Decimal
+  platformFee          Decimal
+  sellerPayout         Decimal
+  
+  // Trazabilidad Contable (Calculadora Inversa BIND)
+  targetNetAmount      Decimal @default(0)
+  grossAmount          Decimal @default(0)
+  gatewayFeeAmount     Decimal @default(0)
+  taxFeeAmount         Decimal @default(0)
+  netPlatformFeeAmount Decimal @default(0)
+  sellerFinalAmount    Decimal @default(0)
+
   mercadoPagoId   String?           @unique
+  
+  // BRIEF #041: Identificador de Mercado Inverso
+  isReverseMarket Boolean @default(false)
   
   // CAMPOS DE BORRADO LÓGICO
   deletedByBuyer  Boolean @default(false)
@@ -191,112 +301,140 @@ model Transaction {
   rating          Rating? // (Legacy)
   review          Review? // (Sistema V2)
   
-  // CHAT ASOCIADO (NUEVO SPEC #009)
+  // CHAT ASOCIADO (SPEC #009)
   chatRoom        ChatRoom?
+
+  // Historial de Auditoría (Spec #016 / #017)
+  history         TransactionHistory[]
+
+  // BRIEF #039: Índices para consultas financieras de alta velocidad
+  @@index([buyerId])
+  @@index([sellerId])
+  @@index([state])
+}
+
+// 6.1 Modelo de HISTORIAL DE TRANSACCIONES (Audit Trail)
+model TransactionHistory {
+  id              String            @id @default(uuid())
+  
+  transaction     Transaction       @relation(fields: [transactionId], references: [id])
+  transactionId   String
+  
+  oldState        TransactionState? // Nullable porque el primer evento no tiene estado previo
+  newState        TransactionState
+  
+  actorId         String?           // Quien detonó el cambio (ID usuario, "WEBHOOK_MP", "SYSTEM_CRON")
+  ipAddress       String?           // Registro de IP si aplica
+
+  createdAt       DateTime          @default(now())
 }
 
 // 7. Modelo de CALIFICACIÓN (LEGACY)
 model Rating {
-  id            String      @id @default(uuid())
-  transaction   Transaction @relation(fields: [transactionId], references: [id])
-  transactionId String      @unique
+  id              String      @id @default(uuid())
+  transaction     Transaction @relation(fields: [transactionId], references: [id])
+  transactionId   String      @unique
   
-  rater         User        @relation("RaterRatings", fields: [raterId], references: [id])
-  raterId       String
-  rated         User        @relation("RatedRatings", fields: [ratedId], references: [id])
-  ratedId       String
+  rater           User        @relation("RaterRatings", fields: [raterId], references: [id])
+  raterId         String
+  rated           User        @relation("RatedRatings", fields: [ratedId], references: [id])
+  ratedId         String
   
-  rating        Int
-  comment       String?     @db.Text
+  rating          Int
+  comment         String?     @db.Text
   
-  quality       Int?
+  quality         Int?
   professionalism Int?
-  communication Int?
+  communication   Int?
   
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 }
 
 // 8. Modelo de PREGUNTAS (Q&A)
 model Question {
-  id          String   @id @default(uuid())
-  content     String   @db.Text 
+  id           String    @id @default(uuid())
+  content      String    @db.Text 
   
-  answer      String?  @db.Text 
-  answeredAt  DateTime?         
+  answer       String?   @db.Text 
+  answeredAt   DateTime?         
   
   isReadByAsker Boolean @default(false) 
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt 
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt 
 
-  product     Product  @relation(fields: [productId], references: [id])
-  productId   String
+  product      Product  @relation(fields: [productId], references: [id])
+  productId    String
   
-  asker       User     @relation("AskerQuestions", fields: [askerId], references: [id])
-  askerId     String
+  asker        User     @relation("AskerQuestions", fields: [askerId], references: [id])
+  askerId      String
 }
 
 // 9. Modelo de RESEÑAS (Review V2)
 model Review {
-  id            String      @id @default(uuid())
+  id              String      @id @default(uuid())
   
-  transaction   Transaction @relation(fields: [transactionId], references: [id])
-  transactionId String      @unique 
+  transaction     Transaction @relation(fields: [transactionId], references: [id])
+  transactionId   String      @unique 
 
-  reviewer      User        @relation("WrittenReviews", fields: [reviewerId], references: [id])
-  reviewerId    String
-  reviewed      User        @relation("ReceivedReviews", fields: [reviewedId], references: [id])
-  reviewedId    String
+  reviewer        User        @relation("WrittenReviews", fields: [reviewerId], references: [id])
+  reviewerId      String
+  reviewed        User        @relation("ReceivedReviews", fields: [reviewedId], references: [id])
+  reviewedId      String
 
-  rating        Int         
-  comment       String?     @db.Text
-  createdAt     DateTime    @default(now())
+  rating          Int         
+  comment         String?     @db.Text
+  createdAt       DateTime    @default(now())
 }
 
 // 10. Modelo de REPORTES (Seguridad V2)
 model UserReport {
-  id          String   @id @default(uuid())
+  id           String    @id @default(uuid())
   
-  reporter    User     @relation("ReporterReports", fields: [reporterId], references: [id])
-  reporterId  String
+  reporter     User      @relation("ReporterReports", fields: [reporterId], references: [id])
+  reporterId   String
   
-  reported    User     @relation("ReportedReports", fields: [reportedId], references: [id])
-  reportedId  String
+  reported     User      @relation("ReportedReports", fields: [reportedId], references: [id])
+  reportedId   String
 
-  reason      String   
-  details     String?  @db.Text
-  status      String   @default("PENDIENTE") 
+  reason       String    
+  details      String?   @db.Text
+  status       String    @default("PENDIENTE") 
   
-  createdAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
 }
 
 // 11. SISTEMA DE CHAT (SPEC #009)
 
 model ChatRoom {
-  id            String      @id @default(uuid())
+  id              String      @id @default(uuid())
   
-  // Relación 1:1 con Transacción (Un chat por compra)
-  transaction   Transaction @relation(fields: [transactionId], references: [id])
-  transactionId String      @unique
+  // Relación opcional con Transacción (Un chat por compra directa)
+  transaction     Transaction? @relation(fields: [transactionId], references: [id])
+  transactionId   String?      @unique
 
-  messages      Message[]
+  // Relación opcional con Mercado Inverso (Varios oferentes pueden abrir chats por una necesidad)
+  needListing     NeedListing? @relation(fields: [needListingId], references: [id])
+  needListingId   String?
+
+  messages        Message[]
   
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt // Importante para ordenar la inbox
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt 
 }
 
 model Message {
-  id          String    @id @default(uuid())
+  id            String    @id @default(uuid())
   
-  chatRoom    ChatRoom  @relation(fields: [chatRoomId], references: [id])
-  chatRoomId  String
+  chatRoom      ChatRoom  @relation(fields: [chatRoomId], references: [id])
+  chatRoomId    String
 
-  sender      User      @relation("SentMessages", fields: [senderId], references: [id])
-  senderId    String
+  sender        User      @relation("SentMessages", fields: [senderId], references: [id])
+  senderId      String
 
-  content     String    @db.Text
-  isRead      Boolean   @default(false) 
+  content       String    @db.Text
+  isRead        Boolean   @default(false) 
   
-  createdAt   DateTime  @default(now())
+  createdAt     DateTime  @default(now())
 }

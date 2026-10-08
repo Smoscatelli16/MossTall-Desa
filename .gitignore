@@ -1,0 +1,34 @@
+# Dependencias
+node_modules/
+.pnp
+.pnp.js
+
+# Entornos y Credenciales (¡CRÍTICO!)
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+*.pem
+
+# Compilados y builds
+dist/
+build/
+.next/
+out/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Prisma
+# (Ignorar la base de datos local si usaras SQLite, aunque usas Postgres)
+*.db
+*.db-journal
+
+# Archivos de SO
+.DS_Store
+Thumbs.db

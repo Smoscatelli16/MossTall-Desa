@@ -1,87 +1,102 @@
+// prisma/seed.ts
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log(' Iniciando la siembra de categorías...');
+  console.log('🌱 Iniciando Seeding de Categorías (Estructura #015)...');
 
-  // 1. Categoría: TECNOLOGÍA
-  const tecno = await prisma.category.upsert({
-    where: { slug: 'tecnologia' },
-    update: {},
-    create: {
-      name: 'Tecnología',
-      slug: 'tecnologia',
-      children: {
-        create: [
-          { name: 'Celulares', slug: 'tecnologia-celulares' },
-          { name: 'Computación', slug: 'tecnologia-computacion' },
-          { name: 'Cámaras', slug: 'tecnologia-camaras' },
-        ],
-      },
-    },
-  });
+  // 1. Limpiar categorías existentes
+  // Esto asegura que el árbol se regenere limpio y sin duplicados.
+  try {
+      await prisma.category.deleteMany({});
+      console.log('🧹 Categorías anteriores eliminadas.');
+  } catch (e) {
+      console.warn('⚠️ La tabla estaba vacía o hubo un aviso al limpiar.');
+  }
 
-  // 2. Categoría: HOGAR
-  const hogar = await prisma.category.upsert({
-    where: { slug: 'hogar' },
-    update: {},
-    create: {
-      name: 'Hogar y Muebles',
-      slug: 'hogar',
-      children: {
-        create: [
-          { name: 'Muebles', slug: 'hogar-muebles' },
-          { name: 'Decoración', slug: 'hogar-decoracion' },
-          { name: 'Jardín', slug: 'hogar-jardin' },
-        ],
-      },
-    },
-  });
-
-  // 3. Categoría: SERVICIOS (Importante para tu modelo de negocio)
-  const servicios = await prisma.category.upsert({
-    where: { slug: 'servicios' },
-    update: {},
-    create: {
-      name: 'Servicios',
-      slug: 'servicios',
-      children: {
-        create: [
-          { name: 'Oficios (Plomería, Gas, etc)', slug: 'servicios-oficios' },
-          { name: 'Tecnología y Diseño', slug: 'servicios-tech' },
-          { name: 'Clases y Cursos', slug: 'servicios-clases' },
-        ],
-      },
-    },
-  });
-  
-  // 4. Categoría: VEHÍCULOS
-  const vehiculos = await prisma.category.upsert({
-    where: { slug: 'vehiculos' },
-    update: {},
-    create: {
+  // 2. Definición de la Estructura (Árbol de Categorías con "Otros")
+  const structure = [
+    {
       name: 'Vehículos',
-      slug: 'vehiculos',
-      children: {
-        create: [
-          { name: 'Autos', slug: 'vehiculos-autos' },
-          { name: 'Motos', slug: 'vehiculos-motos' },
-          { name: 'Repuestos', slug: 'vehiculos-repuestos' },
-        ],
-      },
+      children: ['Autos y Camionetas', 'Motos', 'Náutica', 'Repuestos y Accesorios', 'Otros Vehículos']
     },
-  });
+    {
+      name: 'Inmuebles',
+      children: ['Venta de Casas', 'Alquiler', 'Terrenos y Lotes', 'Comercial', 'Otros Inmuebles']
+    },
+    {
+      name: 'Tecnología',
+      children: ['Celulares', 'Computación', 'Consolas y Videojuegos', 'Cámaras', 'Otros Tecnología']
+    },
+    {
+      name: 'Hogar y Muebles',
+      children: ['Muebles', 'Jardín y Aire Libre', 'Electrodomésticos', 'Decoración', 'Otros Hogar']
+    },
+    {
+      name: 'Moda y Deportes',
+      children: ['Ropa y Calzado', 'Accesorios', 'Deportes y Fitness', 'Otros Moda']
+    },
+    {
+      name: 'Servicios',
+      children: ['Hogar y Mantenimiento', 'Técnicos PC/Celulares', 'Profesionales', 'Eventos', 'Otros Servicios']
+    },
+    {
+      name: 'Infoproductos',
+      children: ['Cursos y Ebooks', 'Software', 'Entradas', 'Otros Infoproductos']
+    },
+    // NUEVA CATEGORÍA COMODÍN (Solución Bug "Otros Incorrecto")
+    {
+      name: 'Otros / Varios',
+      children: ['Otros Productos', 'Otros Servicios', 'Otras Cosas']
+    }
+  ];
 
-  console.log('✅ ¡Siembra completada! Categorías creadas.');
+  // 3. Inserción en Base de Datos
+  for (const mainCat of structure) {
+    // Crear Categoría Padre
+    // Usamos replace para generar slugs limpios (sin tildes ni espacios)
+    const slugPadre = mainCat.name.toLowerCase()
+        .replace(/ /g, '-')
+        .replace(/\//g, '-') // Manejo de la barra en "Otros / Varios"
+        .replace(/ñ/g, 'n')
+        .replace(/[áéíóú]/g, (m) => ({'á':'a','é':'e','í':'i','ó':'o','ú':'u'}[m] || m));
+
+    const parent = await prisma.category.create({
+      data: {
+        name: mainCat.name,
+        slug: slugPadre,
+      }
+    });
+
+    console.log(`📁 Creada rama: ${mainCat.name}`);
+
+    // Crear Subcategorías
+    for (const childName of mainCat.children) {
+      const slugHijo = childName.toLowerCase()
+        .replace(/ /g, '-')
+        .replace(/\//g, '-') // Para casos como "PC/Celulares"
+        .replace(/ñ/g, 'n')
+        .replace(/[áéíóú]/g, (m) => ({'á':'a','é':'e','í':'i','ó':'o','ú':'u'}[m] || m));
+
+      await prisma.category.create({
+        data: {
+          name: childName,
+          slug: slugHijo,
+          parentId: parent.id
+        }
+      });
+    }
+  }
+
+  console.log('✅ Seeding completado con éxito.');
 }
 
 main()
-  .then(async () => {
-    await prisma.$disconnect();
-  })
-  .catch(async (e) => {
+  .catch((e) => {
     console.error(e);
-    await prisma.$disconnect();
     process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
   });
