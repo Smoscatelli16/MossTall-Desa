@@ -20,7 +20,20 @@ dotenv.config();
 const app: Express = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+// Configuración avanzada de CORS para producción (Vercel) y desarrollo local
+app.use(cors({
+  origin: function (origin, callback) {
+    // Permitimos peticiones sin origen (ej. Postman) o provenientes de localhost y vercel
+    if (!origin || origin.includes('localhost') || origin.includes('vercel.app')) {
+      callback(null, true);
+    } else {
+      callback(new Error('No permitido por CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 // Webhook crudo para HMAC MP
 app.use('/api/transactions/webhook', express.raw({ type: 'application/json' }));
