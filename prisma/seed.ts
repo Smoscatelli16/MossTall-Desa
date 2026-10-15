@@ -7,7 +7,6 @@ async function main() {
   console.log('🌱 Iniciando Seeding de Categorías (Estructura #015)...');
 
   // 1. Limpiar categorías existentes
-  // Esto asegura que el árbol se regenere limpio y sin duplicados.
   try {
       await prisma.category.deleteMany({});
       console.log('🧹 Categorías anteriores eliminadas.');
@@ -15,7 +14,7 @@ async function main() {
       console.warn('⚠️ La tabla estaba vacía o hubo un aviso al limpiar.');
   }
 
-  // 2. Definición de la Estructura (Árbol de Categorías con "Otros")
+  // 2. Definición de la Estructura
   const structure = [
     {
       name: 'Vehículos',
@@ -45,7 +44,6 @@ async function main() {
       name: 'Infoproductos',
       children: ['Cursos y Ebooks', 'Software', 'Entradas', 'Otros Infoproductos']
     },
-    // NUEVA CATEGORÍA COMODÍN (Solución Bug "Otros Incorrecto")
     {
       name: 'Otros / Varios',
       children: ['Otros Productos', 'Otros Servicios', 'Otras Cosas']
@@ -54,16 +52,16 @@ async function main() {
 
   // 3. Inserción en Base de Datos
   for (const mainCat of structure) {
-    // Crear Categoría Padre
-    // Usamos replace para generar slugs limpios (sin tildes ni espacios)
     const slugPadre = mainCat.name.toLowerCase()
         .replace(/ /g, '-')
-        .replace(/\//g, '-') // Manejo de la barra en "Otros / Varios"
+        .replace(/\//g, '-')
         .replace(/ñ/g, 'n')
         .replace(/[áéíóú]/g, (m) => ({'á':'a','é':'e','í':'i','ó':'o','ú':'u'}[m] || m));
 
-    const parent = await prisma.category.create({
-      data: {
+    const parent = await prisma.category.upsert({
+      where: { slug: slugPadre },
+      update: {},
+      create: {
         name: mainCat.name,
         slug: slugPadre,
       }
@@ -71,16 +69,20 @@ async function main() {
 
     console.log(`📁 Creada rama: ${mainCat.name}`);
 
-    // Crear Subcategorías
     for (const childName of mainCat.children) {
-      const slugHijo = childName.toLowerCase()
+      const baseSlugHijo = childName.toLowerCase()
         .replace(/ /g, '-')
-        .replace(/\//g, '-') // Para casos como "PC/Celulares"
+        .replace(/\//g, '-')
         .replace(/ñ/g, 'n')
         .replace(/[áéíóú]/g, (m) => ({'á':'a','é':'e','í':'i','ó':'o','ú':'u'}[m] || m));
 
-      await prisma.category.create({
-        data: {
+      // GARANTÍA DE UNICIDAD: Padre + Hijo
+      const slugHijo = `${slugPadre}-${baseSlugHijo}`;
+
+      await prisma.category.upsert({
+        where: { slug: slugHijo },
+        update: { parentId: parent.id },
+        create: {
           name: childName,
           slug: slugHijo,
           parentId: parent.id
