@@ -80,9 +80,15 @@ model Category {
 model User {
   id                  String    @id @default(uuid())
   email               String    @unique
-  password            String
+  password            String?   // Opcional para soportar Google OAuth
   name                String?
   role                Role      @default(USER)
+  
+  // -- EMPALME KYC Y BLINDAJE LEGAL (BRIEF #046) --
+  dni                 String?   @unique
+  phone               String?   @unique
+  termsAccepted       Boolean   @default(false)
+  termsAcceptedAt     DateTime?
   
   // -- SISTEMA DE REPUTACIÓN GLOBAL COMO COMPRADOR / USUARIO --
   ratingAverage       Float     @default(0.0)

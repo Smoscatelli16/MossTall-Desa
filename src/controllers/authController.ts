@@ -9,10 +9,21 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secret-fallback'; // Fallback por 
 // --- LOGICA DE REGISTRO ---
 export const register = async (req: Request, res: Response) => {
   try {
-    const { email, name, password } = req.body;
+    // BRIEF #046: Recibimos los nuevos campos del empalme KYC y legal
+    const { email, name, password, dni, phone, otp, termsAccepted } = req.body;
     
-    if (!email || !name || !password) {
+    if (!email || !name || !password || !dni || !phone) {
       return res.status(400).json({ error: 'Faltan datos obligatorios.' });
+    }
+
+    // BRIEF #046: Validación estricta de términos en backend
+    if (!termsAccepted) {
+      return res.status(400).json({ error: 'Debes aceptar los Términos de Fideicomiso para operar.' });
+    }
+
+    // Validación básica OTP
+    if (otp && otp.length !== 6) {
+      return res.status(400).json({ error: 'Código OTP inválido.' });
     }
 
     const salt = await bcrypt.genSalt(10);
@@ -23,6 +34,10 @@ export const register = async (req: Request, res: Response) => {
         email: email,
         name: name,
         password: hashedPassword,
+        dni: dni,
+        phone: phone,
+        termsAccepted: termsAccepted,
+        termsAcceptedAt: new Date(), // Registramos el momento exacto de la aceptación
       },
     });
 
@@ -34,7 +49,17 @@ export const register = async (req: Request, res: Response) => {
 
   } catch (error: any) {
     if (error.code === 'P2002') {
-      return res.status(409).json({ error: 'El email ya está en uso' });
+      // Prisma: Manejo de errores para campos únicos duplicados
+      if (error.meta?.target?.includes('email')) {
+         return res.status(409).json({ error: 'El email ya está en uso' });
+      }
+      if (error.meta?.target?.includes('dni')) {
+         return res.status(409).json({ error: 'El DNI ya se encuentra registrado' });
+      }
+      if (error.meta?.target?.includes('phone')) {
+         return res.status(409).json({ error: 'El teléfono ya se encuentra registrado' });
+      }
+      return res.status(409).json({ error: 'Un dato único ya está en uso' });
     }
     console.error('Error en el registro:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
@@ -56,6 +81,11 @@ export const login = async (req: Request, res: Response) => {
 
     if (!user) {
       return res.status(401).json({ error: 'Credenciales inválidas' });
+    }
+
+    // TASK 6.1: Intercepción para cuentas de Google OAuth
+    if (!user.password) {
+      return res.status(401).json({ error: 'Esta cuenta está vinculada a Google. Por favor, iniciá sesión con Google.' });
     }
 
     const passwordMatch = await bcrypt.compare(password, user.password);
