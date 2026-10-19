@@ -84,9 +84,9 @@ model User {
   name                String?
   role                Role      @default(USER)
   
-  // -- EMPALME KYC Y BLINDAJE LEGAL (BRIEF #046) --
-  dni                 String?   @unique
-  phone               String?   @unique
+  // -- EMPALME KYC Y BLINDAJE LEGAL --
+  dni                 String?   @unique // KYC Progresivo: Se llena más adelante al crear Tienda
+  phone               String?   @unique // TASK 49.2: Unicidad validada
   termsAccepted       Boolean   @default(false)
   termsAcceptedAt     DateTime?
   
@@ -413,7 +413,6 @@ model UserReport {
 }
 
 // 11. SISTEMA DE CHAT (SPEC #009)
-
 model ChatRoom {
   id              String      @id @default(uuid())
   
@@ -444,4 +443,18 @@ model Message {
   isRead        Boolean   @default(false) 
   
   createdAt     DateTime  @default(now())
+}
+
+// 12. SISTEMA DE AUTENTICACIÓN OTP (BRIEF #050)
+model OtpVerification {
+  id        String   @id @default(uuid())
+  phone     String   
+  code      String   
+  expiresAt DateTime
+  verified  Boolean  @default(false)
+  attempts  Int      @default(0) // Control de fuerza bruta
+
+  createdAt DateTime @default(now())
+
+  @@index([phone])
 }

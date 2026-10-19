@@ -60,3 +60,30 @@ export const adminMiddleware = async (req: AuthRequest, res: Response, next: Nex
     res.status(500).json({ error: 'Error interno validando credenciales.' });
   }
 };
+
+// --- MURO KYC COMERCIAL ---
+// Middleware para proteger rutas estrictas comerciales (ej: publicar producto, retirar fondos)
+export const requireKycMiddleware = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Acceso denegado. Usuario no identificado.' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: { dni: true }
+    });
+
+    if (!user || !user.dni) {
+      return res.status(403).json({ 
+        error: 'KYC_REQUIRED', 
+        message: 'Para operar comercialmente, debes validar tu identidad proporcionando tu DNI.' 
+      });
+    }
+
+    next();
+  } catch (error) {
+    console.error('Error en middleware KYC:', error);
+    res.status(500).json({ error: 'Error validando identidad comercial.' });
+  }
+};

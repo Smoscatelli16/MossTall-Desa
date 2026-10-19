@@ -66,17 +66,31 @@ export const getStoreById = async (req: Request, res: Response) => {
     }
 };
 
-// 4. CREAR TIENDA (PROTEGIDO)
+// 4. CREAR TIENDA CON MURO KYC (PROTEGIDO)
 export const createStore = async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.userId;
-        const { name, description, logoUrl, bannerUrl, type, cbu, cvu, alias } = req.body;
+        // Se agrega `dni` al destructuring para capturarlo en el salto comercial
+        const { name, description, logoUrl, bannerUrl, type, cbu, cvu, alias, dni } = req.body;
 
         if (!name) return res.status(400).json({ error: 'El nombre de la tienda es obligatorio.' });
         
         // BRIEF #040: El CBU/CVU es obligatorio para el nuevo modelo comercial
         if (!cbu && !cvu) return res.status(400).json({ error: 'Debes proporcionar un CBU o CVU para recibir pagos.' });
         
+        // --- MURO KYC COMERCIAL: Validación en tiempo real ---
+        const user = await prisma.user.findUnique({ where: { id: userId! } });
+        if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
+
+        // Si el usuario no tiene DNI registrado y no lo está enviando en el formulario
+        if (!user.dni && !dni) {
+            return res.status(403).json({ 
+                error: 'KYC_REQUIRED', 
+                message: 'Para abrir una tienda y recibir pagos, es obligatorio validar tu identidad ingresando tu DNI.' 
+            });
+        }
+        // ----------------------------------------------------
+
         // Validar que el tipo sea uno de los permitidos en la nueva arquitectura
         const validTypes = ['PRODUCT_STORE', 'SERVICE_PROFESSIONAL', 'DIGITAL_CREATOR'];
         const storeType = validTypes.includes(type) ? type : 'PRODUCT_STORE';
@@ -95,19 +109,37 @@ export const createStore = async (req: AuthRequest, res: Response) => {
             }
         }
 
-        const newStore = await prisma.store.create({
-            data: {
-                name, description, logoUrl, bannerUrl, 
-                type: storeType, // Asignación validada
-                cbu: cbu || null,
-                cvu: cvu || null,
-                alias: alias || null,
-                ownerId: userId!
-            } as any
+        // --- TRANSACCIÓN ATÓMICA: Empalme KYC y Alta de Tienda ---
+        const result = await prisma.$transaction(async (tx) => {
+            // Si el usuario envió su DNI ahora, lo guardamos para blanquear su identidad
+            if (!user.dni && dni) {
+                await tx.user.update({
+                    where: { id: userId! },
+                    data: { dni: dni }
+                });
+            }
+
+            // Creamos la tienda acoplada al usuario
+            const newStore = await tx.store.create({
+                data: {
+                    name, description, logoUrl, bannerUrl, 
+                    type: storeType, 
+                    cbu: cbu || null,
+                    cvu: cvu || null,
+                    alias: alias || null,
+                    ownerId: userId!
+                } as any
+            });
+
+            return newStore;
         });
 
-        res.status(201).json(newStore);
-    } catch (error) {
+        res.status(201).json(result);
+    } catch (error: any) {
+        // Manejo de error si otro usuario ya registró el mismo DNI
+        if (error.code === 'P2002' && error.meta?.target?.includes('dni')) {
+            return res.status(409).json({ error: 'El DNI ingresado ya se encuentra vinculado a otro perfil comercial.' });
+        }
         console.error('Error al crear tienda:', error);
         res.status(500).json({ error: 'Error interno al crear la tienda.' });
     }

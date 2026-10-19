@@ -9,17 +9,37 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secret-fallback'; // Fallback por 
 // --- LOGICA DE REGISTRO ---
 export const register = async (req: Request, res: Response) => {
   try {
-    // BRIEF #046: Recibimos los nuevos campos del empalme KYC y legal
-    const { email, name, password, dni, phone, otp, termsAccepted } = req.body;
+    // TASK 49.1 y 49.4: Eliminamos DNI inicial y recibimos turnstileToken
+    const { email, name, password, phone, otp, termsAccepted, turnstileToken } = req.body;
     
-    if (!email || !name || !password || !dni || !phone) {
+    if (!email || !name || !password || !phone) {
       return res.status(400).json({ error: 'Faltan datos obligatorios.' });
     }
 
-    // BRIEF #046: Validación estricta de términos en backend
     if (!termsAccepted) {
       return res.status(400).json({ error: 'Debes aceptar los Términos de Fideicomiso para operar.' });
     }
+
+    // --- TASK 49.4: Validación Anti-Bot (Cloudflare Turnstile) ---
+    if (!turnstileToken) {
+      return res.status(400).json({ error: 'Fallo la validación de seguridad (Anti-Bot).' });
+    }
+
+    const formData = new URLSearchParams();
+    formData.append('secret', process.env.TURNSTILE_SECRET_KEY || '');
+    formData.append('response', turnstileToken);
+
+    const cfResponse = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      body: formData,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+    const cfData = await cfResponse.json();
+    
+    if (!cfData.success) {
+      return res.status(400).json({ error: 'Verificación de seguridad fallida. Sesión detectada como bot.' });
+    }
+    // -------------------------------------------------------------
 
     // Validación básica OTP
     if (otp && otp.length !== 6) {
@@ -34,10 +54,9 @@ export const register = async (req: Request, res: Response) => {
         email: email,
         name: name,
         password: hashedPassword,
-        dni: dni,
-        phone: phone,
+        phone: phone, // DNI se omite, queda null
         termsAccepted: termsAccepted,
-        termsAcceptedAt: new Date(), // Registramos el momento exacto de la aceptación
+        termsAcceptedAt: new Date(), 
       },
     });
 
@@ -49,17 +68,14 @@ export const register = async (req: Request, res: Response) => {
 
   } catch (error: any) {
     if (error.code === 'P2002') {
-      // Prisma: Manejo de errores para campos únicos duplicados
+      // TASK 49.2: Manejo de errores preciso para unicidad
       if (error.meta?.target?.includes('email')) {
-         return res.status(409).json({ error: 'El email ya está en uso' });
-      }
-      if (error.meta?.target?.includes('dni')) {
-         return res.status(409).json({ error: 'El DNI ya se encuentra registrado' });
+         return res.status(409).json({ error: 'El email ya está en uso.' });
       }
       if (error.meta?.target?.includes('phone')) {
-         return res.status(409).json({ error: 'El teléfono ya se encuentra registrado' });
+         return res.status(409).json({ error: 'Este número de teléfono ya está asociado a otra cuenta.' });
       }
-      return res.status(409).json({ error: 'Un dato único ya está en uso' });
+      return res.status(409).json({ error: 'Un dato único ya está en uso.' });
     }
     console.error('Error en el registro:', error);
     res.status(500).json({ error: 'Error interno del servidor' });

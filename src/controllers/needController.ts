@@ -2,11 +2,17 @@
 import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middlewares/authMiddleware';
+import { Resend } from 'resend';
+
+// Inicializamos Resend para las notificaciones del Matchmaking
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 // Crear una nueva solicitud de necesidad
 export const createNeed = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { title, description, estimatedBudget } = req.body;
+    // Se agrega categoryId para asociar el pedido a un rubro
+    const { title, description, estimatedBudget, categoryId } = req.body;
     
     const userId = req.userId;
 
@@ -25,9 +31,54 @@ export const createNeed = async (req: AuthRequest, res: Response): Promise<void>
         title,
         description,
         estimatedBudget: estimatedBudget ? Number(estimatedBudget) : null,
-        userId
+        userId,
+        // Guardamos la categoría si viene en la petición y si existe en tu esquema de Prisma
+        ...(categoryId && { categoryId })
       }
     });
+
+    // --- ALGORITMO DE MATCHMAKING (TASK 8.2) OPTIMIZADO ---
+    // Buscamos a los dueños de tiendas para notificarles la nueva oportunidad
+    try {
+        if (resend) {
+            const potentialStores = await prisma.store.findMany({
+                where: { 
+                    ownerId: { not: userId }, // No enviarle mail al mismo usuario que pide
+                    ...(categoryId && { categoryId }) // Filtro inteligente por rubro/categoría
+                },
+                include: { owner: true },
+                take: 5, // Reducido a 5 para apuntar mejor y cuidar los costos del plan gratuito
+                orderBy: { createdAt: 'desc' }
+            });
+
+            // Disparamos notificaciones por correo de manera asíncrona
+            for (const store of potentialStores) {
+                if (store.owner.email) {
+                    resend.emails.send({
+                        from: 'Mission Vende <onboarding@resend.dev>',
+                        to: store.owner.email,
+                        subject: '🔥 ¡Nueva oportunidad de venta en Mercado Inverso!',
+                        html: `
+                            <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
+                                <h3 style="color: #1a237e;">Hola ${store.owner.name || store.name},</h3>
+                                <p>Un comprador en Mission Vende acaba de publicar una solicitud que coincide exactamente con tu rubro:</p>
+                                <div style="background-color: #f8fafc; padding: 15px; border-left: 4px solid #1a237e; margin: 20px 0;">
+                                    <strong>${title}</strong><br/>
+                                    <p style="color: #64748b;">${description}</p>
+                                    <p style="margin-top: 10px; font-weight: bold;">💰 Presupuesto estimado: $${estimatedBudget || 'A convenir'}</p>
+                                </div>
+                                <p>Ingresá al Mercado Inverso para ver los detalles y enviarle tu propuesta antes que la competencia.</p>
+                                <a href="https://mosstall-desa-production.up.railway.app/mercado-inverso" style="display: inline-block; background-color: #1a237e; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold;">Hacer una oferta</a>
+                            </div>
+                        `
+                    }).catch(e => console.error("Error enviando email de matchmaking:", e));
+                }
+            }
+        }
+    } catch (matchError) {
+        console.error('Error silencioso en algoritmo de matchmaking:', matchError);
+    }
+    // -------------------------------------------
 
     res.status(201).json(newNeed);
   } catch (error) {
