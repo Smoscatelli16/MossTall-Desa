@@ -458,3 +458,15 @@ model OtpVerification {
 
   @@index([phone])
 }
+
+// 13. Modelo de BANNERS PUBLICITARIOS (BRIEF #051)
+model Banner {
+  id              String   @id @default(uuid())
+  title           String?
+  desktopImageUrl String
+  mobileImageUrl  String
+  targetUrl       String?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}

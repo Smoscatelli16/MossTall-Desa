@@ -17,6 +17,7 @@ import userRoutes from './routes/userRoutes';
 import needRoutes from './routes/needRoutes';
 import reviewRoutes from './routes/reviewRoutes';
 import storeRoutes from './routes/storeRoutes'; 
+import bannerRoutes from './routes/bannerRoutes';
 
 dotenv.config();
 const app: Express = express();
@@ -50,6 +51,7 @@ app.use('/api', userRoutes);
 app.use('/api/needs', needRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api', storeRoutes); 
+app.use('/api/banners', bannerRoutes);
 
 app.get('/', (req: Request, res: Response) => {
   res.send('✅ Servidor Mission Vende funcionando.');
