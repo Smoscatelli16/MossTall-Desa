@@ -36,10 +36,20 @@ export const sendOtp = async (req: Request, res: Response) => {
       }
     });
 
-    // Delegamos la entrega por WhatsApp
+    // TASK 52.1: Modo Simulación (OTP Bypass)
+    const isDevMode = process.env.DEV_MODE_SHOW_OTP === 'true';
+    if (isDevMode) {
+      console.log(`[DEV MODE] OTP para ${phone}: ${code}`);
+      return res.status(200).json({ 
+        message: 'Código generado (Modo Simulación).',
+        devOtp: code 
+      });
+    }
+
+    // Delegamos la entrega por WhatsApp si no está en modo desarrollo
     await sendOtpMessage(phone, code);
 
-    // Seguridad por diseño: No devolver el código en el payload
+    // Seguridad por diseño: No devolver el código en el payload en producción real
     res.status(200).json({ message: 'Código enviado por WhatsApp exitosamente.' });
   } catch (error) {
     console.error('Error al generar OTP:', error);

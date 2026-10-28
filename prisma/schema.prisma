@@ -89,6 +89,11 @@ model User {
   phone               String?   @unique // TASK 49.2: Unicidad validada
   termsAccepted       Boolean   @default(false)
   termsAcceptedAt     DateTime?
+
+  // -- BRIEF #052: MURO DE SEGURIDAD BASE Y TELEMETRÍA --
+  isEmailVerified     Boolean   @default(false)
+  activationToken     String?   @unique
+  registrationIp      String?
   
   // -- SISTEMA DE REPUTACIÓN GLOBAL COMO COMPRADOR / USUARIO --
   ratingAverage       Float     @default(0.0)
