@@ -70,15 +70,14 @@ export const getStoreById = async (req: Request, res: Response) => {
 export const createStore = async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.userId;
-        // Se agrega `dni` al destructuring para capturarlo en el salto comercial
-        const { name, description, logoUrl, bannerUrl, type, cbu, cvu, alias, dni } = req.body;
+        const { name, description, logoUrl, type, cbu, cvu, alias, dni } = req.body;
 
         if (!name) return res.status(400).json({ error: 'El nombre de la tienda es obligatorio.' });
         
         // BRIEF #040: El CBU/CVU es obligatorio para el nuevo modelo comercial
         if (!cbu && !cvu) return res.status(400).json({ error: 'Debes proporcionar un CBU o CVU para recibir pagos.' });
         
-        // --- MURO KYC COMERCIAL: Validación en tiempo real ---
+        // --- MURO KYC COMERCIAL: Validación en tiempo real (Task 53.4) ---
         const user = await prisma.user.findUnique({ where: { id: userId! } });
         if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
 
@@ -86,7 +85,7 @@ export const createStore = async (req: AuthRequest, res: Response) => {
         if (!user.dni && !dni) {
             return res.status(403).json({ 
                 error: 'KYC_REQUIRED', 
-                message: 'Para abrir una tienda y recibir pagos, es obligatorio validar tu identidad ingresando tu DNI.' 
+                message: 'Por normativas de prevención de fraude y Fideicomiso, necesitamos validar tu identidad antes de habilitar tus cobros.' 
             });
         }
         // ----------------------------------------------------
@@ -111,7 +110,7 @@ export const createStore = async (req: AuthRequest, res: Response) => {
 
         // --- TRANSACCIÓN ATÓMICA: Empalme KYC y Alta de Tienda ---
         const result = await prisma.$transaction(async (tx) => {
-            // Si el usuario envió su DNI ahora, lo guardamos para blanquear su identidad
+            // Si el usuario envió su DNI/CUIL ahora, lo guardamos para blanquear su identidad
             if (!user.dni && dni) {
                 await tx.user.update({
                     where: { id: userId! },
@@ -119,16 +118,19 @@ export const createStore = async (req: AuthRequest, res: Response) => {
                 });
             }
 
-            // Creamos la tienda acoplada al usuario
+            // Creamos la tienda acoplada al usuario y la marcamos como verificada (Task 53.4)
             const newStore = await tx.store.create({
                 data: {
-                    name, description, logoUrl, bannerUrl, 
+                    name, 
+                    description, 
+                    logoUrl, 
                     type: storeType, 
                     cbu: cbu || null,
                     cvu: cvu || null,
                     alias: alias || null,
-                    ownerId: userId!
-                } as any
+                    ownerId: userId!,
+                    isMerchantVerified: true // <-- Impactamos el blindaje comercial
+                }
             });
 
             return newStore;
@@ -138,7 +140,7 @@ export const createStore = async (req: AuthRequest, res: Response) => {
     } catch (error: any) {
         // Manejo de error si otro usuario ya registró el mismo DNI
         if (error.code === 'P2002' && error.meta?.target?.includes('dni')) {
-            return res.status(409).json({ error: 'El DNI ingresado ya se encuentra vinculado a otro perfil comercial.' });
+            return res.status(409).json({ error: 'El CUIT/CUIL ingresado ya se encuentra vinculado a otro perfil comercial.' });
         }
         console.error('Error al crear tienda:', error);
         res.status(500).json({ error: 'Error interno al crear la tienda.' });
@@ -150,7 +152,7 @@ export const updateStore = async (req: AuthRequest, res: Response) => {
     try {
         const { id } = req.params;
         const userId = req.userId;
-        const { name, description, logoUrl, bannerUrl, type, cbu, cvu, alias } = req.body;
+        const { name, description, logoUrl, type, cbu, cvu, alias } = req.body;
 
         const store = await prisma.store.findUnique({ where: { id } });
         if (!store) return res.status(404).json({ error: 'Tienda no encontrada.' });
@@ -160,16 +162,20 @@ export const updateStore = async (req: AuthRequest, res: Response) => {
         let updateType = store.type;
         if (type) {
              const validTypes = ['PRODUCT_STORE', 'SERVICE_PROFESSIONAL', 'DIGITAL_CREATOR'];
-             if(validTypes.includes(type)) updateType = type;
+             if(validTypes.includes(type)) updateType = type as any; // Casteo simple para TS
         }
 
         const updatedStore = await prisma.store.update({
             where: { id },
             data: { 
-                name, description, logoUrl, bannerUrl, 
+                name, 
+                description, 
+                logoUrl, 
                 type: updateType, 
-                cbu, cvu, alias 
-            } as any
+                cbu, 
+                cvu, 
+                alias 
+            }
         });
 
         res.json(updatedStore);

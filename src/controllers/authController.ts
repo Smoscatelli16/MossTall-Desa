@@ -10,11 +10,27 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secret-fallback'; // Fallback por 
 // --- LOGICA DE REGISTRO ---
 export const register = async (req: Request, res: Response) => {
   try {
-    // TASK 49.1 y 49.4: Eliminamos DNI inicial y recibimos turnstileToken
-    const { email, name, password, phone, otp, termsAccepted, turnstileToken } = req.body;
+    const { email, name, password, phone, otp, termsAccepted, turnstileToken, birthDate } = req.body;
     
     if (!email || !name || !password || !phone) {
       return res.status(400).json({ error: 'Faltan datos obligatorios.' });
+    }
+
+    if (!birthDate) {
+      return res.status(400).json({ error: 'La fecha de nacimiento es obligatoria.' });
+    }
+
+    // TASK 52.3: Validación estricta de mayoría de edad (+18) en el Backend
+    const birthDateObj = new Date(birthDate);
+    const today = new Date();
+    let age = today.getFullYear() - birthDateObj.getFullYear();
+    const monthDiff = today.getMonth() - birthDateObj.getMonth();
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDateObj.getDate())) {
+      age--;
+    }
+
+    if (age < 18) {
+      return res.status(400).json({ error: 'Debes ser mayor de 18 años para operar en Mission Vende.' });
     }
 
     if (!termsAccepted) {
@@ -63,8 +79,11 @@ export const register = async (req: Request, res: Response) => {
         name: name,
         password: hashedPassword,
         phone: phone, // DNI se omite, queda null
+        birthDate: birthDateObj,
         termsAccepted: termsAccepted,
         termsAcceptedAt: new Date(), 
+        acceptedTermsAt: new Date(), // TASK 53.2: Timestamp inmutable legal
+        termsVersion: "1.0",         // TASK 53.2: Versión contractual 
         registrationIp: registrationIp,
         isEmailVerified: false,
         activationToken: activationToken

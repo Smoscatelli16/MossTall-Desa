@@ -87,8 +87,13 @@ model User {
   // -- EMPALME KYC Y BLINDAJE LEGAL --
   dni                 String?   @unique // KYC Progresivo: Se llena más adelante al crear Tienda
   phone               String?   @unique // TASK 49.2: Unicidad validada
+  birthDate           DateTime? // TASK 52.3: Validación de mayoría de edad (+18)
+  
+  // TASK 53.2: Registro de Auditoría de Aceptación Legal
   termsAccepted       Boolean   @default(false)
-  termsAcceptedAt     DateTime?
+  termsAcceptedAt     DateTime? 
+  acceptedTermsAt     DateTime  @default(now()) // Timestamp inmutable de aceptación inicial
+  termsVersion        String    @default("1.0") // Control de versionado contractual
 
   // -- BRIEF #052: MURO DE SEGURIDAD BASE Y TELEMETRÍA --
   isEmailVerified     Boolean   @default(false)
@@ -137,32 +142,35 @@ model User {
 
 // 2.1 NUEVO: Modelo de TIENDA / PERFIL (BRIEF #040)
 model Store {
-  id            String      @id @default(uuid())
+  id                  String      @id @default(uuid())
   
-  owner         User        @relation("UserStores", fields: [ownerId], references: [id])
-  ownerId       String
+  owner               User        @relation("UserStores", fields: [ownerId], references: [id])
+  ownerId             String
 
-  name          String
-  description   String?     @db.Text
-  logoUrl       String?
+  name                String
+  description         String?     @db.Text
+  logoUrl             String?
 
-  type          StoreType
+  type                StoreType
+
+  // TASK 53.4: Disparador de KYC Progresivo (Merchant Wall)
+  isMerchantVerified  Boolean     @default(false)
 
   // -- DATOS BANCARIOS DESACOPLADOS DEL USUARIO --
-  cbu           String?     
-  cvu           String?     
-  alias         String?
+  cbu                 String?     
+  cvu                 String?     
+  alias               String?
 
   // -- MÉTRICAS INDEPENDIENTES DE LA TIENDA --
-  ratingAverage Float       @default(0.0)
-  totalReviews  Int         @default(0)
-  totalSales    Int         @default(0)
+  ratingAverage       Float       @default(0.0)
+  totalReviews        Int         @default(0)
+  totalSales          Int         @default(0)
 
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
 
   // Los productos ahora pertenecen a la tienda, no al usuario
-  products      Product[]   @relation("StoreProducts")
+  products            Product[]   @relation("StoreProducts")
 
   @@index([ownerId])
 }
