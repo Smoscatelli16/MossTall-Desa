@@ -60,6 +60,16 @@ enum StoreType {
   DIGITAL_CREATOR
 }
 
+// BRIEF #054: Estados Logísticos
+enum ShipmentStatus {
+  PENDING
+  PREPARING
+  READY_FOR_PICKUP
+  IN_TRANSIT
+  DELIVERED
+  FAILED
+}
+
 // --- MODELOS DE DATOS ---
 
 // 1. Modelo de CATEGORÍAS
@@ -136,6 +146,9 @@ model User {
   // RELACIONES DE CHAT (SPEC #009)
   sentMessages        Message[]     @relation("SentMessages")
 
+  // TASK 54.1: Direcciones guardadas del usuario para checkout
+  addresses           Address[]     @relation("UserAddresses")
+
   // BRIEF #039: Índices para búsquedas rápidas por email
   @@index([email])
 }
@@ -171,6 +184,9 @@ model Store {
 
   // Los productos ahora pertenecen a la tienda, no al usuario
   products            Product[]   @relation("StoreProducts")
+
+  // TASK 54.1: Domicilio comercial de origen para el cálculo de envíos
+  address             Address?    @relation("StoreAddress")
 
   @@index([ownerId])
 }
@@ -327,6 +343,9 @@ model Transaction {
   // Historial de Auditoría (Spec #016 / #017)
   history         TransactionHistory[]
 
+  // TASK 54.1: Integración con logística
+  shipment        Shipment?
+
   // BRIEF #039: Índices para consultas financieras de alta velocidad
   @@index([buyerId])
   @@index([sellerId])
@@ -482,4 +501,64 @@ model Banner {
   isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+}
+
+
+// --- TASK 54.1: MODELOS LOGÍSTICOS Y GEOGRÁFICOS ---
+
+// 14. Modelo de DIRECCIONES GEOLOCALIZADAS
+model Address {
+  id             String    @id @default(uuid())
+  street         String
+  number         String?   // Formato alfanumérico por casos "S/N"
+  zipCode        String?
+  city           String    @default("Posadas")
+  province       String    @default("Misiones")
+  reference      String?   @db.Text
+  
+  latitude       Float?    
+  longitude      Float?    
+
+  // Relaciones
+  user           User?     @relation("UserAddresses", fields: [userId], references: [id])
+  userId         String?
+
+  store          Store?    @relation("StoreAddress", fields: [storeId], references: [id])
+  storeId        String?   @unique
+
+  // Historial Logístico (Checkout)
+  shipmentsOriginated  Shipment[] @relation("OriginAddress")
+  shipmentsDestined    Shipment[] @relation("DestinationAddress")
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+// 15. Modelo de ENVÍOS / TRACKING (Neo Mandados Integration)
+model Shipment {
+  id                   String         @id @default(uuid())
+  
+  transaction          Transaction    @relation(fields: [transactionId], references: [id])
+  transactionId        String         @unique
+
+  status               ShipmentStatus @default(PENDING)
+  trackingNumber       String?        @unique
+
+  // Direcciones Inmutables para el envío
+  originAddress        Address        @relation("OriginAddress", fields: [originAddressId], references: [id])
+  originAddressId      String
+
+  destinationAddress   Address        @relation("DestinationAddress", fields: [destinationAddressId], references: [id])
+  destinationAddressId String
+
+  // Datos Tarifarios y Telemétricos
+  distanceKm           Float?
+  shippingCost         Decimal        @default(0)
+  estimatedDelivery    DateTime?
+  
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  @@index([trackingNumber])
+  @@index([status])
 }
