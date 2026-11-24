@@ -70,6 +70,15 @@ enum ShipmentStatus {
   FAILED
 }
 
+// BRIEF #056 (Task 56.2): Estados de la Cola de Reintentos Logísticos
+enum ShipmentQueueStatus {
+  PENDING           // Esperando primer intento o próximo retry con backoff
+  PROCESSING        // Bloqueado por el cron mientras llama a Neo Mandados
+  SUCCESS           // Shipment creado exitosamente en Neo Mandados
+  FAILED            // Fallo técnico (se conserva para auditoría tras recuperación manual)
+  MANUAL_OVERRIDE   // Agotados los 5 intentos: requiere intervención del operador
+}
+
 // --- MODELOS DE DATOS ---
 
 // 1. Modelo de CATEGORÍAS
@@ -346,6 +355,9 @@ model Transaction {
   // TASK 54.1: Integración con logística
   shipment        Shipment?
 
+  // BRIEF #056 (Task 56.2): Cola de reintentos logísticos (1:N, preserva historial de auditoría)
+  shipmentQueueEntries ShipmentQueue[]
+
   // BRIEF #039: Índices para consultas financieras de alta velocidad
   @@index([buyerId])
   @@index([sellerId])
@@ -438,7 +450,7 @@ model UserReport {
   reportedId   String
 
   reason       String    
-  details      String?   @db.Text
+  details       String?   @db.Text
   status       String    @default("PENDIENTE") 
   
   createdAt    DateTime @default(now())
@@ -530,8 +542,8 @@ model Address {
   shipmentsOriginated  Shipment[] @relation("OriginAddress")
   shipmentsDestined    Shipment[] @relation("DestinationAddress")
 
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 }
 
 // 15. Modelo de ENVÍOS / TRACKING (Neo Mandados Integration)
@@ -561,4 +573,37 @@ model Shipment {
 
   @@index([trackingNumber])
   @@index([status])
+}
+
+// --- BRIEF #056 (TASK 56.2): RESILIENCIA LOGÍSTICA NEO MANDADOS ---
+
+// 16. Modelo de COLA DE REINTENTOS DE SHIPMENTS
+// Captura las órdenes de envío cuando el Circuit Breaker está OPEN.
+// El cron logisticsRetryJob procesa esta cola con backoff exponencial.
+// DISEÑO 1:N con Transaction (decisión de arquitectura #056): permite reintentos
+// manuales sin perder evidencia forense; la idempotencia se garantiza en la capa
+// de servicio (el cron chequea que no exista Shipment activo antes de re-intentar).
+// ATENCIÓN PII: El campo payload NUNCA almacena nombres, direcciones ni teléfonos
+// en texto plano. Solo IDs internos y coordenadas ofuscadas (redondeadas a 3 decimales).
+model ShipmentQueue {
+  id              String              @id @default(uuid())
+
+  transaction     Transaction         @relation(fields: [transactionId], references: [id])
+  transactionId   String
+
+  // Payload sanitizado de la orden (JSON con IDs y coords ofuscadas, jamás PII)
+  payload         Json
+
+  attemptCount    Int                 @default(0)      // Intentos fallidos acumulados (máx 5)
+  lastError       String?                              // Último error técnico registrado (sin PII)
+  nextRetryAt     DateTime                             // Próxima ventana de reintento (backoff exponencial + jitter ±10%)
+  status          ShipmentQueueStatus @default(PENDING)
+
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  // Índice compuesto CRÍTICO: evita saturación de la DB en el escaneo del cron
+  // (mitigación del riesgo principal del Brief #056: miles de pedidos en cola)
+  @@index([status, nextRetryAt])
+  @@index([transactionId])
 }

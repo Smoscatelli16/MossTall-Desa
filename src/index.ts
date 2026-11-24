@@ -7,6 +7,9 @@ import prisma from './lib/prisma';
 // --- IMPORTAMOS EL NUEVO DAEMON (BRIEF #047) ---
 import { startEscrowDaemon } from './services/escrowDaemon';
 
+// --- IMPORTAMOS MIDDLEWARE DE TELEMETRÍA (BRIEF #056) ---
+import { telemetryMiddleware } from './middlewares/telemetryMiddleware';
+
 // --- IMPORTAMOS LAS RUTAS ---
 import authRoutes from './routes/authRoutes';
 import productRoutes from './routes/productRoutes';
@@ -41,6 +44,9 @@ app.use(cors({
 // Webhook crudo para HMAC MP
 app.use('/api/transactions/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
+
+// --- TELEMETRÍA DE ENTORNO Y HARDWARE (NON-BLOCKING - BRIEF #056) ---
+app.use(telemetryMiddleware);
 
 // --- MONTAJE DE RUTAS ---
 app.use('/api/auth', authRoutes);

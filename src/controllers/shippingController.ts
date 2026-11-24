@@ -1,6 +1,9 @@
 import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middlewares/authMiddleware';
+// BRIEF #056 (Task 56.1/56.2): Integración protegida por Circuit Breaker + Cola de reintentos
+import { createOrder } from '../services/neoMandadosService';
+import { enqueueShipment } from '../services/shipmentQueueService';
 
 // Constantes Tarifarias de Neo Mandados (Misiones)
 const BASE_FEE = 1500;       // Bajada de bandera / Costo fijo de despacho (ARS)
@@ -15,12 +18,12 @@ function calculateHaversineDistance(lat1: number, lon1: number, lat2: number, lo
     const R = 6371; // Radio de la Tierra en km
     const dLat = (lat2 - lat1) * (Math.PI / 180);
     const dLon = (lon2 - lon1) * (Math.PI / 180);
-    
-    const a = 
+
+    const a =
         Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * 
+        Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
         Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        
+
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     const straightDistance = R * c;
 
@@ -31,6 +34,8 @@ function calculateHaversineDistance(lat1: number, lon1: number, lat2: number, lo
 /**
  * POST /api/shipping/calculate-cost
  * Calcula el costo de envío dinámico entre el comercio (origen) y el comprador (destino)
+ * NOTA #056: Este endpoint es LOCAL (no llama a Neo Mandados), por lo que sigue
+ * funcionando aunque el circuito esté abierto. El cálculo de tarifa nunca se degrada.
  */
 export const calculateShippingCost = async (req: Request, res: Response) => {
     try {
@@ -107,7 +112,15 @@ export const calculateShippingCost = async (req: Request, res: Response) => {
 
 /**
  * POST /api/shipping/ready-for-pickup
- * Panel del Vendedor: Marca el paquete como listo y dispara la orden a Neo Mandados
+ * Panel del Vendedor: Marca el paquete como listo y dispara la orden a Neo Mandados.
+ *
+ * BRIEF #056 (Task 56.1 + 56.2): La orden ya NO se inventa acá. Se delega al
+ * servicio con Circuit Breaker. Tres resultados posibles:
+ *   1. Éxito        -> shipment READY_FOR_PICKUP con tracking real/simulado.
+ *   2. Circuito OPEN-> Se ENCOLA en ShipmentQueue (atômico con Prisma) y responde
+ *                      202 + LOGISTICS_UNAVAILABLE (venta no se pierde).
+ *   3. Falló la API -> Error 502 tradicional (el CB registró el fallo; posiblemente
+ *                      abrirá el circuito para las próximas llamadas).
  */
 export const markReadyForPickup = async (req: AuthRequest, res: Response) => {
     try {
@@ -131,17 +144,86 @@ export const markReadyForPickup = async (req: AuthRequest, res: Response) => {
             return res.status(400).json({ error: 'El envío ya fue despachado o está en un estado inválido.' });
         }
 
-        // --- INTEGRACIÓN API NEO MANDADOS (Simulada para MVP) ---
-        // Aquí se haría un POST real a la API de la logística (ej. https://api.neomandados.com/v1/orders)
-        // enviando originAddress y destinationAddress.
-        const simulatedTrackingNumber = `NEO-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 1000)}`;
+        // Payload OPERATIVO para la API de Neo Mandados (usa direcciones reales,
+        // pero NO se persiste tal cual: para la cola se sanitiza aparte — Zero PII)
+        const neoPayload = {
+            pickup: {
+                lat: shipment.originAddress.latitude,
+                lng: shipment.originAddress.longitude,
+                address: `${shipment.originAddress.street} ${shipment.originAddress.number ?? ''}`.trim(),
+            },
+            dropoff: {
+                lat: shipment.destinationAddress.latitude,
+                lng: shipment.destinationAddress.longitude,
+                address: `${shipment.destinationAddress.street} ${shipment.destinationAddress.number ?? ''}`.trim(),
+            },
+            reference: shipment.transaction.id,
+        };
 
-        const updatedShipment = await prisma.shipment.update({
-            where: { id: shipmentId },
-            data: { 
-                status: 'READY_FOR_PICKUP',
-                trackingNumber: simulatedTrackingNumber
-            }
+        const result = await createOrder(neoPayload);
+
+        // --- CASO 2: Circuito abierto -> Modo Manual Supervisado (cola) ---
+        if (result.errorType === 'CIRCUIT_OPEN') {
+            const queueEntry = await enqueueShipment(shipment.transactionId, {
+                shipmentId: shipment.id,
+                originAddressId: shipment.originAddressId,
+                destinationAddressId: shipment.destinationAddressId,
+                // Coordenadas ofuscadas a 3 decimales (~100m): suficiente para re-tarifar,
+                // insuficiente para identificar un domicilio exacto. Cumple Zero PII #056.
+                originCoordsObfuscated: {
+                    lat: Math.round((shipment.originAddress.latitude ?? 0) * 1000) / 1000,
+                    lng: Math.round((shipment.originAddress.longitude ?? 0) * 1000) / 1000,
+                },
+                destCoordsObfuscated: {
+                    lat: Math.round((shipment.destinationAddress.latitude ?? 0) * 1000) / 1000,
+                    lng: Math.round((shipment.destinationAddress.longitude ?? 0) * 1000) / 1000,
+                },
+                reason: 'SELLER_DISPATCH_CIRCUIT_OPEN',
+            });
+
+            return res.status(202).json({
+                code: 'LOGISTICS_UNAVAILABLE',
+                message:
+                    'Tu pedido quedó reservado. Se enviará automáticamente a Neo Mandados en cuanto se restablezca el servicio.',
+                queued: true,
+                queueId: queueEntry.id,
+                nextRetryAt: queueEntry.nextRetryAt,
+            });
+        }
+
+        // --- CASO 3: La API respondió con fallo técnico ---
+        if (!result.success) {
+            return res.status(502).json({
+                error: 'EL_PROVEEDOR_LOGISTICO_FALLO',
+                detail: result.errorMessage,
+                message: 'Neo Mandados no pudo recibir la orden. Reintentalo en unos minutos.',
+            });
+        }
+
+        // --- CASO 1: Éxito -> confirmar despacho (transacción atómica con auditoría) ---
+        const updatedShipment = await prisma.$transaction(async (tx) => {
+            const updated = await tx.shipment.update({
+                where: { id: shipmentId },
+                data: {
+                    status: 'READY_FOR_PICKUP',
+                    trackingNumber: result.trackingNumber,
+                    estimatedDelivery: result.estimatedDeliveryMinutes
+                        ? new Date(Date.now() + result.estimatedDeliveryMinutes * 60 * 1000)
+                        : shipment.estimatedDelivery,
+                },
+            });
+
+            // Registrar en la pista de auditoría contable (Spec #016/#017)
+            await tx.transactionHistory.create({
+                data: {
+                    transactionId: shipment.transactionId,
+                    oldState: shipment.transaction.state,
+                    newState: shipment.transaction.state, // Sin cambio de estado financiero: solo traza logística
+                    actorId: 'SYSTEM_NEO_MANDADOS',
+                },
+            });
+
+            return updated;
         });
 
         res.json({ message: 'Orden despachada con éxito. Un cadete está en camino.', shipment: updatedShipment });
@@ -191,7 +273,7 @@ export const neoMandadosWebhook = async (req: Request, res: Response) => {
 
             // 2. Ejecutar liberación del Escrow si el paquete fue entregado con éxito
             if (newStatus === 'DELIVERED' && shipment.transaction.state === 'PAID_HELD') {
-                
+
                 await tx.transaction.update({
                     where: { id: shipment.transaction.id },
                     data: { state: 'FUNDS_RELEASED' }
@@ -207,7 +289,7 @@ export const neoMandadosWebhook = async (req: Request, res: Response) => {
                     }
                 });
 
-                // NOTA TÉCNICA FINANCIERA: 
+                // NOTA TÉCNICA FINANCIERA:
                 // En este punto es donde el backend detonaría la llamada HTTP a BIND (transferencia saliente)
                 // o a Mercado Pago (captura de reserva) para enviar el dinero real al CBU del vendedor.
             }
