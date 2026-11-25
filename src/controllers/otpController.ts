@@ -18,15 +18,14 @@ export const sendOtp = async (req: Request, res: Response) => {
       return res.status(409).json({ error: 'Este número de teléfono ya está asociado a otra cuenta.' });
     }
 
-    // Invalida códigos anteriores no verificados para este número
-    await prisma.otpVerification.updateMany({
+    // Eliminamos códigos anteriores no verificados para evitar colisiones con registros expirados
+    await prisma.otpVerification.deleteMany({
       where: { phone, verified: false },
-      data: { expiresAt: new Date() }, // Los marcamos como expirados
     });
 
     // Genera código seguro de 6 dígitos
     const code = crypto.randomInt(100000, 999999).toString();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // Válido por 5 minutos
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // Válido por 10 minutos
 
     await prisma.otpVerification.create({
       data: {
@@ -65,9 +64,9 @@ export const verifyOtp = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Teléfono y código son obligatorios.' });
     }
 
-    // Buscar el OTP activo más reciente para este número
+    // Buscar el OTP más reciente para este número
     const otpRecord = await prisma.otpVerification.findFirst({
-      where: { phone, verified: false },
+      where: { phone },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -75,7 +74,18 @@ export const verifyOtp = async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'No hay códigos pendientes para este número.' });
     }
 
-    if (new Date() > otpRecord.expiresAt) {
+    const now = new Date();
+
+    // Si ya fue verificado recientemente (ej: reintento tras un error en /register), permitir continuar si sigue vigente
+    if (otpRecord.verified) {
+      if (otpRecord.code === code && now <= otpRecord.expiresAt) {
+        return res.status(200).json({ message: 'Identidad verificada correctamente.' });
+      }
+      return res.status(400).json({ error: 'Este código ya fue utilizado. Por favor, solicita uno nuevo.' });
+    }
+
+    if (now > otpRecord.expiresAt) {
+      console.warn(`[OTP] Expirado para ${phone}. now=${now.toISOString()} expiresAt=${otpRecord.expiresAt.toISOString()}`);
       return res.status(400).json({ error: 'El código ha expirado. Por favor, solicita uno nuevo.' });
     }
 
@@ -84,7 +94,6 @@ export const verifyOtp = async (req: Request, res: Response) => {
     }
 
     if (otpRecord.code !== code) {
-      // Incrementar intentos si falla
       await prisma.otpVerification.update({
         where: { id: otpRecord.id },
         data: { attempts: otpRecord.attempts + 1 },
